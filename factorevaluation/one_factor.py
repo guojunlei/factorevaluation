@@ -3,13 +3,12 @@
 author:guojunlei
 date:2022.06.04
 """
-
-import re
-from statistics import mode
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-
+import matplotlib.pyplot as plt
+import os
+import multiprocessing
 
 class evaluation:
 
@@ -22,6 +21,8 @@ class evaluation:
         self.factors = factor
         self.ICstat = pd.DataFrame()
         self.REGstat = pd.DataFrame()
+        self.GROUPstat = pd.DataFrame()
+        self.RETstat = pd.DataFrame()
 
     @classmethod
     def _func_icir(cls, x, name):
@@ -35,6 +36,35 @@ class evaluation:
         x = sm.add_constant(x)
         model = sm.RLM(y, x, M=sm.robust.norms.HuberT()).fit()
         return model.params[-1], model.tvalues[-1]
+
+    @classmethod
+    def _func_group(cls, x, name, num):
+        x['group'] = pd.qcut(x[name].rank(method='first'), q=num, labels=False)
+        ret_list = []
+        for i in range(num):
+            ret = x.loc[x['group'] == i, 'next_ret'].mean()
+            ret_list.append(ret)
+        return ret_list
+
+    @classmethod
+    def _cal_group(cls, x):
+        df = pd.DataFrame(x)
+        num = len(df.iloc[0, 0])
+        ret_df = pd.DataFrame(index=df.index)
+        for i in range(num):
+            ret_df[f"group_{i+1}"] = df[0].apply(lambda x: x[i])
+        final_ret = (ret_df + 1).cumprod()
+        final_ret = final_ret.iloc[-1].tolist()
+        if final_ret[0] < final_ret[-1]:
+            label = '正'
+            ret_df[
+                'group_longshort'] = ret_df[f'group_{num}'] - ret_df["group_1"]
+        else:
+            label = '反'
+            ret_df[
+                'group_longshort'] = ret_df["group_1"] - ret_df[f'group_{num}']
+
+        return ret_df, label
 
     def calculate_ICIR(self):
         df = self.data
@@ -62,7 +92,7 @@ class evaluation:
         self.ICstat.loc[self.factors, '因子IC绝对值>0.04的概率'] = ic_data[
             abs(ic_data) > 0.04].shape[0] / ic_data.shape[0]
         self.ICstat.loc[self.factors, '因子IR'] = ir
-        self.ICstat = self.ICstat.T
+        self.ICstat = self.ICstat
 
     def regression_method(self):
         df = self.data
@@ -87,19 +117,75 @@ class evaluation:
                 factor_k['k'] < 0].shape[0] / factor_k.shape[0]
             self.REGstat.loc[self.factors, '因子均值大于或小于0t值大于2的概率'] = factor_k[
                 factor_k['t'] < -2].shape[0] / factor_k.shape[0]
-        self.REGstat=self.REGstat.T
+        self.REGstat = self.REGstat
 
-    def grouping(self):
-        ...
+    def grouping(self, ngroup: int):
+        df = self.data
+        group_ret = df.groupby('交易日期').apply(self._func_group, self.factors,
+                                             ngroup)
+        group_ret, labal = self._cal_group(group_ret)
+        self.GROUPstat.loc[self.factors, '因子方向'] = labal
+        self.GROUPstat.loc[self.factors,
+                           '多空收益'] = (group_ret['group_longshort'] +
+                                      1).prod() - 1
+        self.GROUPstat.loc[self.factors, '多空最大回撤'] = (
+            (group_ret['group_longshort'] + 1).cumprod() /
+            (group_ret['group_longshort'] + 1).cumprod().expanding().max() -
+            1).min()
+        group_ret.index = pd.to_datetime(group_ret.index)
+        self.GROUPstat.loc[self.factors, '多空夏普'] = (
+            group_ret['group_longshort'] + 1).cumprod().diff().mean() / (
+                group_ret['group_longshort'] +
+                1).cumprod().diff().std() * np.sqrt(
+                    365 / (group_ret.index.tolist()[1] -
+                           group_ret.index.tolist()[0]).days)
+
+        self.RETstat = group_ret
+
+    def draw_picture(self, if_save=True):
+        df = self.RETstat
+        fig1 = plt.figure(figsize=(18, 9))
+        ax1 = plt.subplot(2, 1, 1)
+        ax1.set_title("group_equity")
+        for col in df.columns:
+            plt.plot((df[col] + 1).cumprod(), label=col)
+        plt.legend(loc='best')
+
+        ax2 = plt.subplot(2, 1, 2)
+        ax2.set_title("group_net")
+        x = df.columns.tolist()
+        y = np.array((df + 1).prod().tolist())
+        plt.bar(x, y)
+        plt.legend(loc='best')
+        if if_save:
+            if not os.path.exists(f"{os.getcwd()}/data/output/{self.factors}"):
+                os.mkdir(f"{os.getcwd()}/data/output/{self.factors}")
+
+            plt.savefig(
+                f"{os.getcwd()}/data/output/{self.factors}/{self.factors}.jpg")
+            res = pd.concat([self.ICstat, self.REGstat, self.GROUPstat],
+                            axis=1)
+            res.to_csv(
+                f"{os.getcwd()}/data/output/{self.factors}/{self.factors}.csv",
+                index=0)
+
+        plt.show()
+
+def run_full_func(factor,if_pro=True):
+    process1 = multiprocessing.Process(target=factor.calculate_ICIR())
+    process2 = multiprocessing.Process(target=factor.regression_method())
+    process3 = multiprocessing.Process(target=factor.grouping(5))
+
+    process1.start()
+    process2.start()
+    process3.start()
+
+    process1.join()
+    process1.join()
+    process1.join()
+
+    factor.draw_picture()
 
 
 if __name__ == "__main__":
-    df = pd.read_pickle("../data/all_stock_data_W.pkl")
-    df = df[df['交易日期'] <= pd.to_datetime("20160101")]
-    df = df[['交易日期', '股票代码', '总市值', '下周期每天涨跌幅']]
-    df['next_ret'] = df['下周期每天涨跌幅'].apply(
-        lambda x: np.prod(np.array(x) + 1) - 1)
-    del df['下周期每天涨跌幅']
-    df.dropna(inplace=True)
-    factor = evaluation(df, '总市值')
-    factor.regression_method()
+    ...
