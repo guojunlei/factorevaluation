@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import os
 import multiprocessing
 
+
 class evaluation:
 
     def __init__(self, df: pd.DataFrame, factor: str) -> None:
@@ -67,7 +68,7 @@ class evaluation:
         return ret_df, label
 
     def calculate_ICIR(self):
-        df = self.data
+        df = self.data.copy()
         ic_data = df.groupby('交易日期').apply(self._func_icir, self.factors)
         mean_ic = np.mean(ic_data)
         if mean_ic > 0:
@@ -95,7 +96,7 @@ class evaluation:
         self.ICstat = self.ICstat
 
     def regression_method(self):
-        df = self.data
+        df = self.data.copy()
         factor_k = df.groupby('交易日期').apply(self._regression_rlm, self.factors)
         factor_k = pd.DataFrame(factor_k)
         factor_k['k'] = factor_k[0].apply(lambda x: x[0])
@@ -120,7 +121,7 @@ class evaluation:
         self.REGstat = self.REGstat
 
     def grouping(self, ngroup: int):
-        df = self.data
+        df = self.data.copy()
         group_ret = df.groupby('交易日期').apply(self._func_group, self.factors,
                                              ngroup)
         group_ret, labal = self._cal_group(group_ret)
@@ -143,7 +144,7 @@ class evaluation:
         self.RETstat = group_ret
 
     def draw_picture(self, if_save=True):
-        df = self.RETstat
+        df = self.RETstat.copy()
         fig1 = plt.figure(figsize=(18, 9))
         ax1 = plt.subplot(2, 1, 1)
         ax1.set_title("group_equity")
@@ -171,20 +172,27 @@ class evaluation:
 
         plt.show()
 
-def run_full_func(factor,if_pro=True):
-    process1 = multiprocessing.Process(target=factor.calculate_ICIR())
-    process2 = multiprocessing.Process(target=factor.regression_method())
-    process3 = multiprocessing.Process(target=factor.grouping(5))
 
-    process1.start()
-    process2.start()
-    process3.start()
+def run_full_func(factor, if_pro=True):
+    if if_pro:
+        process1 = multiprocessing.Process(target=factor.calculate_ICIR())
+        process2 = multiprocessing.Process(target=factor.regression_method())
+        process3 = multiprocessing.Process(target=factor.grouping(5))
 
-    process1.join()
-    process1.join()
-    process1.join()
+        process1.start()
+        process2.start()
+        process3.start()
 
-    factor.draw_picture()
+        process1.join()
+        process1.join()
+        process1.join()
+
+        factor.draw_picture()
+    else:
+        factor.calculate_ICIR()
+        factor.regression_method()
+        factor.grouping(5)
+        factor.draw_picture()
 
 
 if __name__ == "__main__":
